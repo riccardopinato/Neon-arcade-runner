@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import type { RewardedAdRewardType } from '../systems/MonetizationSystem';
 import { MOCK_ADS, MockAd } from '../data';
 import { audio } from '../utils/audio';
 import { 
@@ -15,7 +16,7 @@ import {
 
 interface AdOverlayProps {
   type: 'banner' | 'interstitial' | 'rewarded';
-  rewardType?: 'extra_life' | 'shield_boost' | 'magnet_boost' | 'fire_boost' | 'gems_double';
+  rewardType?: RewardedAdRewardType;
   onClose: (rewardGranted: boolean) => void;
   isAdFree: boolean;
   isPremium: boolean;
@@ -208,11 +209,11 @@ export const AdOverlay: React.FC<AdOverlayProps> = ({
                 {type === 'rewarded' && rewardType && (
                   <p className="text-xs text-emerald-300/80 mt-1">
                     Hai sbloccato il premio: <span className="font-bold uppercase text-emerald-300">
-                      {rewardType === 'extra_life' && '❤️ 1 Vita Extra'}
+                      {rewardType === 'revive' && '❤️ 1 Vita Extra'}
                       {rewardType === 'shield_boost' && '🛡️ Scudo Temporaneo (45s)'}
                       {rewardType === 'magnet_boost' && '🧲 Calamita Monete (45s)'}
                       {rewardType === 'fire_boost' && '⚡ Cadenza Fuoco Rapido (45s)'}
-                      {rewardType === 'gems_double' && '💎 Raddoppio Gemme Raccolte'}
+                      {rewardType === 'double_rewards' && '💎 Raddoppio Gemme Raccolte'}
                     </span>
                   </p>
                 )}
@@ -223,7 +224,7 @@ export const AdOverlay: React.FC<AdOverlayProps> = ({
           {/* Bottom Info */}
           {type === 'rewarded' ? (
             <div className="text-xs text-gray-500 italic">
-              *La ricompensa verrà applicata istantaneamente all'inizio della prossima partita.
+              *Il premio viene accreditato solo dopo il completamento del video.
             </div>
           ) : (
             <button 
@@ -246,7 +247,7 @@ export const AdOverlay: React.FC<AdOverlayProps> = ({
           {!isPremium && !isAdFree && (
             <div className="pt-2">
               <span className="text-[11px] text-yellow-500/80 font-medium">
-                👑 Rimuovi per sempre questi annunci acquistando il Premium nello Store offline!
+                👑 Neon Premium e No Ads rimuovono per sempre gli interstitial automatici.
               </span>
             </div>
           )}
