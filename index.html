@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>My Google AI Studio App</title>
+    <script>
+      (function() {
+        try {
+          var realFetch = window.fetch || (typeof globalThis !== 'undefined' ? globalThis.fetch : null);
+          
+          // Try defining a configurable getter/setter on window directly
+          try {
+            var currentFetch = realFetch;
+            Object.defineProperty(window, 'fetch', {
+              get: function() { return currentFetch; },
+              set: function(v) { currentFetch = v; },
+              configurable: true,
+              enumerable: true
+            });
+          } catch (e1) {
+            console.warn('Cannot define fetch on window directly, trying prototype:', e1);
+          }
+
+          // Try defining getter/setter on Window.prototype
+          try {
+            if (window.Window && window.Window.prototype) {
+              var currentProtoFetch = realFetch;
+              Object.defineProperty(window.Window.prototype, 'fetch', {
+                get: function() { return currentProtoFetch; },
+                set: function(v) { currentProtoFetch = v; },
+                configurable: true,
+                enumerable: true
+              });
+            }
+          } catch (e2) {
+            console.warn('Cannot define fetch on Window.prototype:', e2);
+          }
+
+          // Try defining getter/setter on globalThis
+          try {
+            if (typeof globalThis !== 'undefined' && globalThis !== window) {
+              var currentGlobalFetch = realFetch;
+              Object.defineProperty(globalThis, 'fetch', {
+                get: function() { return currentGlobalFetch; },
+                set: function(v) { currentGlobalFetch = v; },
+                configurable: true,
+                enumerable: true
+              });
+            }
+          } catch (e3) {
+            console.warn('Cannot define fetch on globalThis:', e3);
+          }
+        } catch (err) {
+          console.error('Fetch patch failed completely:', err);
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

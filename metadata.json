@@ -1,0 +1,6 @@
+{
+  "name": "Neon Arcade Runner",
+  "description": "An offline retro arcade game with simulated premium subscriptions, in-app purchases to remove banner ads, and reward ads for temporary power-ups, extra lives, and boosts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

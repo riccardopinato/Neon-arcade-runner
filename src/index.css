@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+@keyframes shakeGlow {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 15px rgba(37, 99, 235, 0.4), 0 0 5px rgba(37, 99, 235, 0.2);
+  }
+  45% {
+    transform: scale(1.03);
+    box-shadow: 0 0 25px rgba(99, 102, 241, 0.7), 0 0 10px rgba(99, 102, 241, 0.4);
+  }
+  50% {
+    transform: scale(1.03) rotate(-1deg);
+    box-shadow: 0 0 30px rgba(99, 102, 241, 0.8), 0 0 15px rgba(99, 102, 241, 0.5);
+  }
+  55% {
+    transform: scale(1.03) rotate(1deg);
+    box-shadow: 0 0 30px rgba(99, 102, 241, 0.8), 0 0 15px rgba(99, 102, 241, 0.5);
+  }
+  60% {
+    transform: scale(1.03) rotate(-1deg);
+    box-shadow: 0 0 30px rgba(99, 102, 241, 0.8), 0 0 15px rgba(99, 102, 241, 0.5);
+  }
+  65% {
+    transform: scale(1.03) rotate(0deg);
+    box-shadow: 0 0 25px rgba(99, 102, 241, 0.7), 0 0 10px rgba(99, 102, 241, 0.4);
+  }
+}
+
+.animate-shake-glow {
+  animation: shakeGlow 3.5s ease-in-out infinite;
+}
+
