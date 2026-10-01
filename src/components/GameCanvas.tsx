@@ -15,14 +15,13 @@ import {
   Tv, 
   Trophy, 
   Sparkles, 
-  Play, 
-  Pause, 
   RotateCcw,
-  Volume2,
-  VolumeX,
   Gem,
-  AlertTriangle
+  AlertTriangle,
+  Home,
+  Save
 } from 'lucide-react';
+import { App as CapacitorApp } from '@capacitor/app';
 
 interface GameCanvasProps {
   equippedShipId: string;
@@ -45,6 +44,9 @@ interface GameCanvasProps {
   fleet?: Record<string, { level: number; xp: number; matchesPlayed: number; enemiesDestroyed: number }>;
   isFtue?: boolean;
   onCompleteFtueStep?: () => void;
+  autoStart?: boolean;
+  resumeSnapshot?: string | null;
+  onExitRun: (snapshot?: string) => void;
 }
 
 export const GameCanvas: React.FC<GameCanvasProps> = ({
@@ -66,7 +68,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   isDailyBossRun = false,
   fleet = {},
   isFtue = false,
-  onCompleteFtueStep
+  onCompleteFtueStep,
+  autoStart = true,
+  resumeSnapshot = null,
+  onExitRun
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -79,8 +84,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   const [isGameOver, setIsGameOver] = useState(false);
   const [isVictory, setIsVictory] = useState(false);
   const [victoryRewards, setVictoryRewards] = useState<{ gems: number; fragmentShipId: string; fragmentCount: number; badge: string } | null>(null);
-  const [soundOn, setSoundOn] = useState(true);
   const [survivalSeconds, setSurvivalSeconds] = useState(0);
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
+  const hasBootstrappedRunRef = useRef(false);
 
   // Distances and Zones monitoring
   const [distance, setDistance] = useState(0);
@@ -256,14 +262,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     observer.observe(containerRef.current);
     return () => observer.disconnect();
   }, [isPlaying]);
-
-  // Sync Audio Toggle with Utility
-  const toggleSound = () => {
-    audio.playClick();
-    const target = !soundOn;
-    setSoundOn(target);
-    audio.setEnabled(target);
-  };
 
   // Keyboard controls
   useEffect(() => {
@@ -470,6 +468,103 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       });
     }
   };
+
+  const createRunSnapshot = () => {
+    const state = stateRef.current;
+    const now = Date.now();
+
+    return JSON.stringify({
+      version: 1,
+      savedAt: now,
+      state: { ...state, powerups: undefined },
+      powerupsRemaining: {
+        shield: Math.max(0, state.powerups.shieldUntil - now),
+        fireRate: Math.max(0, state.powerups.fireRateUntil - now),
+        magnet: Math.max(0, state.powerups.magnetUntil - now)
+      },
+      ui: {
+        score,
+        gemsCollected,
+        health: state.player.hp,
+        distance,
+        currentZone,
+        ultimateCharge,
+        survivalSeconds
+      }
+    });
+  };
+
+  const restoreSavedRun = () => {
+    if (!resumeSnapshot) return false;
+
+    try {
+      const parsed = JSON.parse(resumeSnapshot);
+      if (parsed?.version !== 1 || !parsed?.state) return false;
+
+      const now = Date.now();
+      const current = stateRef.current;
+      const restored = parsed.state;
+      const remaining = parsed.powerupsRemaining || {};
+
+      stateRef.current = {
+        ...current,
+        ...restored,
+        player: {
+          ...current.player,
+          ...(restored.player || {})
+        },
+        keys: {},
+        powerups: {
+          shieldUntil: now + Math.max(0, Number(remaining.shield) || 0),
+          fireRateUntil: now + Math.max(0, Number(remaining.fireRate) || 0),
+          magnetUntil: now + Math.max(0, Number(remaining.magnet) || 0)
+        }
+      };
+
+      const ui = parsed.ui || {};
+      setScore(Number(ui.score) || Number(restored.stats?.score) || 0);
+      setGemsCollected(Number(ui.gemsCollected) || Number(restored.stats?.gemsCollected) || 0);
+      setHealth(Number(restored.player?.hp) || Number(ui.health) || 1);
+      setDistance(Number(ui.distance) || Math.round((Number(restored.stats?.distance) || 0) * 10));
+      setCurrentZone(ui.currentZone || restored.currentZone || 'Neon Orbit');
+      setUltimateCharge(Number(restored.ultimateCharge) || Number(ui.ultimateCharge) || 0);
+      setSurvivalSeconds(Number(ui.survivalSeconds) || 0);
+      setIsGameOver(false);
+      setIsVictory(false);
+      setIsPaused(false);
+      setShowExitConfirm(false);
+      setIsPlaying(true);
+      addEventLogRef.current('Partita Premium ripristinata. 🚀', 'emerald');
+      return true;
+    } catch (error) {
+      console.error('Unable to restore run snapshot', error);
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    if (hasBootstrappedRunRef.current) return;
+    hasBootstrappedRunRef.current = true;
+
+    if (resumeSnapshot && restoreSavedRun()) return;
+    if (autoStart) startNewGame();
+  }, []);
+
+  useEffect(() => {
+    let listener: { remove: () => Promise<void> } | undefined;
+
+    void CapacitorApp.addListener('backButton', () => {
+      if (isGameOver || isVictory) return;
+      setIsPaused(true);
+      setShowExitConfirm(true);
+    }).then(handle => {
+      listener = handle;
+    });
+
+    return () => {
+      if (listener) void listener.remove();
+    };
+  }, [isGameOver, isVictory]);
 
   // Main game loop
   useEffect(() => {
@@ -718,16 +813,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         }
       }
 
-      // Invulnerability blink update
+      // Derive invulnerability every frame from legitimate timed sources only.
       if (state.player.invulnTimer > 0) {
         state.player.invulnTimer--;
-        if (state.player.invulnTimer <= 0) {
-          state.player.isInvulnerable = false;
-        }
       }
-      if (shieldTimer > 0) {
-        state.player.isInvulnerable = true;
-      }
+      const hasHitGrace = state.player.invulnTimer > 0;
+      const hasActiveShield = shieldTimer > 0;
+      state.player.isInvulnerable = hasHitGrace || hasActiveShield;
 
       // 2. SPAWN METEOR ENEMIES (Scales up spawn frequency and max screen cap dynamically with distance thresholds)
       let baseSpawnChance = chaosMode ? 0.06 : 0.022;
@@ -1633,7 +1725,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
             
             if (item.type === 'shield') {
               state.powerups.shieldUntil = now + boostLength;
-              state.player.isInvulnerable = true;
               createSparks(state, item.x, item.y, 12, '#3b82f6');
               addEventLogRef.current("Scudo Energetico Attivato! 🛡️", "blue");
             } else if (item.type === 'fire') {
@@ -2149,7 +2240,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     });
   };
 
-  const quitGame = () => {
+  const finishRun = () => {
     audio.playClick();
     setIsPlaying(false);
     setIsGameOver(false);
@@ -2160,6 +2251,27 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       bossKills: stateRef.current.bossKillsCount,
       collectedFragment: stateRef.current.collectedFragmentShipId || undefined
     });
+  };
+
+  const requestExitRun = () => {
+    audio.playClick();
+    setIsPaused(true);
+    setShowExitConfirm(true);
+  };
+
+  const cancelExitRun = () => {
+    audio.playClick();
+    setShowExitConfirm(false);
+    setIsPaused(false);
+  };
+
+  const confirmExitRun = () => {
+    audio.playClick();
+    const snapshot = isPremium ? createRunSnapshot() : undefined;
+    setShowExitConfirm(false);
+    setIsPlaying(false);
+    setIsPaused(false);
+    onExitRun(snapshot);
   };
 
   // Helper particle emitter
@@ -2210,12 +2322,23 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   };
 
   return (
-    <div className="w-full flex flex-col h-full bg-zinc-950 select-none">
+    <div className="w-full h-full relative bg-black select-none overflow-hidden">
       
-      {/* Top HUD panel */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-900 bg-zinc-900/40 text-sm">
-        <div className="flex items-center gap-3">
-          <div className="flex gap-1">
+      {/* Mobile-first HUD overlay */}
+      <div
+        className="absolute inset-x-0 top-0 z-40 flex items-center justify-between gap-2 px-2 pb-2 bg-gradient-to-b from-black/85 via-black/55 to-transparent text-sm pointer-events-none"
+        style={{ paddingTop: 'max(env(safe-area-inset-top), 0.5rem)' }}
+      >
+        <div className="flex items-center gap-2 min-w-0 pointer-events-auto">
+          <button
+            type="button"
+            onClick={requestExitRun}
+            className="w-9 h-9 shrink-0 rounded-full border border-white/15 bg-black/55 backdrop-blur flex items-center justify-center text-white active:scale-95"
+            aria-label="Torna alla Home"
+          >
+            <Home className="w-4 h-4" />
+          </button>
+          <div className="flex gap-0.5">
             {Array.from({ length: Math.max(0, shipConfig.health) }).map((_, i) => (
               <Heart 
                 key={i} 
@@ -2231,7 +2354,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           )}
         </div>
 
-        <div className="flex items-center gap-4 sm:gap-6">
+        <div className="flex items-center gap-2 sm:gap-4 pointer-events-none">
           <div className="text-right hidden sm:block">
             <span className="text-[10px] text-gray-500 block">ZONA</span>
             <span className={`text-xs font-black uppercase tracking-wider ${
@@ -2260,11 +2383,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         </div>
       </div>
 
-      {/* Main Sandbox Gameplay stage */}
+      {/* Full viewport gameplay stage */}
       <div 
         id="game-stage" 
         ref={containerRef} 
-        className={`flex-1 w-full relative overflow-hidden min-h-[400px] transition-all duration-1000 ${
+        className={`absolute inset-0 w-full h-full overflow-hidden transition-all duration-1000 ${
           currentZone === 'Quantum Abyss' ? 'bg-[#020b06]' :
           currentZone === 'Solar Wreck Zone' ? 'bg-[#120a03]' :
           currentZone === 'Violet Debris Field' ? 'bg-[#0c0714]' :
@@ -2280,7 +2403,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
-          className="absolute inset-0 block touch-none cursor-crosshair"
+          className="absolute inset-0 block w-full h-full touch-none"
         />
 
         {/* Big Zone Transition Notification Alert Overlay */}
@@ -2310,7 +2433,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         )}
 
         {/* Timers list for active powerups */}
-        <div className="absolute top-4 left-4 space-y-2 pointer-events-none">
+        <div className="absolute top-16 left-3 space-y-1.5 pointer-events-none z-20">
           {shieldTimeLeft > 0 && (
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-blue-950/70 border border-blue-500/40 text-blue-300 text-xs font-bold animate-pulse">
               <Shield className="w-3.5 h-3.5" /> Scudo: {shieldTimeLeft}s
@@ -2330,7 +2453,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
         {/* Epic Boss Health Bar */}
         {activeBoss && isPlaying && !isGameOver && (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 w-[85%] max-w-xs sm:max-w-sm z-20 flex flex-col gap-1 items-center bg-zinc-950/90 border border-purple-500/30 px-3 py-2 rounded-xl shadow-2xl backdrop-blur-sm">
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 w-[85%] max-w-xs sm:max-w-sm z-20 flex flex-col gap-1 items-center bg-zinc-950/90 border border-purple-500/30 px-3 py-2 rounded-xl shadow-2xl backdrop-blur-sm">
             <div className="flex justify-between w-full text-[9px] sm:text-[10px] font-black text-purple-400 uppercase tracking-widest">
               <span>⚠️ {isDailyBossRun ? `BOSS: ${DailyBossSystem.getTodayBoss().name.toUpperCase()}` : 'COLOSSO DELLO SPAZIO'}</span>
               <span>{activeBoss.hp} / {activeBoss.maxHp} HP</span>
@@ -2373,14 +2496,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
               <span>SUPERNOVA: {ultimateCharge}%</span>
             </button>
             {ultimateCharge >= 100 && (
-              <span className="text-[8px] text-pink-400 font-extrabold tracking-widest animate-pulse">CLICCA O PREMI SPAZIO</span>
+              <span className="text-[8px] text-pink-400 font-extrabold tracking-widest animate-pulse">TOCCA PER ATTIVARE</span>
             )}
           </div>
         )}
 
         {/* Floating Event Log Overlay */}
         {isPlaying && !isPaused && !isGameOver && eventLogs.length > 0 && (
-          <div className="absolute top-4 right-4 flex flex-col gap-1.5 items-end max-w-[250px] pointer-events-none z-10">
+          <div className="absolute top-16 right-3 flex flex-col gap-1.5 items-end max-w-[250px] pointer-events-none z-10">
             {eventLogs.map((log) => {
               const bgBorderColor = 
                 log.color === 'blue' ? "bg-blue-950/80 border-blue-500/40 text-blue-200" :
@@ -2404,41 +2527,29 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           </div>
         )}
 
-        {/* Floating Controls instructions */}
-        {isPlaying && !isPaused && !isGameOver && (
-          <div className="absolute bottom-4 left-4 right-4 pointer-events-none text-center">
-            <span className="text-[10px] text-gray-500 bg-black/60 px-3 py-1 rounded-full border border-zinc-800">
-              Trascina o usa FRECCE / WASD per pilotare. Fuoco automatico attivo!
-            </span>
-          </div>
-        )}
-
-        {/* START OVERLAY MENU */}
-        {!isPlaying && !isGameOver && (
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center">
-            <h1 className="text-4xl font-extrabold tracking-tight text-white flex items-center gap-2 mb-2">
-              <Sparkles className="w-8 h-8 text-yellow-400 animate-pulse" />
-              NEON ARCADE
-            </h1>
-            <p className="text-gray-400 max-w-sm text-sm mb-6">
-              Vola nello spazio profondo, polverizza i meteoriti, raccogli gemme e potenzia il tuo arsenale offline!
-            </p>
-
-            <div className="space-y-4 w-full max-w-xs">
-              <button 
-                onClick={startNewGame}
-                className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white font-extrabold rounded-xl shadow-lg shadow-blue-600/30 transition-all flex items-center justify-center gap-2 text-base active:scale-95"
-              >
-                <Play className="w-5 h-5 fill-white" /> AVVIA MOTORI
-              </button>
-
-              <div className="flex gap-2">
-                <button 
-                  onClick={toggleSound}
-                  className="flex-1 py-2 bg-zinc-900 border border-zinc-800 text-zinc-300 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 hover:text-white"
+        {/* EXIT RUN CONFIRMATION */}
+        {showExitConfirm && !isGameOver && !isVictory && (
+          <div className="absolute inset-0 z-[80] bg-black/85 backdrop-blur-md flex items-center justify-center px-5">
+            <div className="w-full max-w-sm rounded-2xl border border-zinc-700 bg-zinc-950 p-5 text-center shadow-2xl">
+              <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center">
+                {isPremium ? <Save className="w-5 h-5 text-yellow-400" /> : <Home className="w-5 h-5 text-blue-400" />}
+              </div>
+              <h2 className="text-xl font-black text-white">Tornare alla Home?</h2>
+              <p className="text-sm text-zinc-400 mt-2 leading-relaxed">
+                {isPremium
+                  ? 'Neon Premium salverà questa run. Potrai riprenderla dalla Home esattamente da qui.'
+                  : 'Se esci adesso, i progressi di questa run andranno persi.'}
+              </p>
+              <div className="grid grid-cols-2 gap-3 mt-5">
+                <button type="button" onClick={cancelExitRun} className="py-3 rounded-xl border border-zinc-700 bg-zinc-900 text-zinc-200 font-bold active:scale-95">
+                  Continua
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmExitRun}
+                  className={`py-3 rounded-xl font-black text-white active:scale-95 ${isPremium ? 'bg-yellow-600' : 'bg-rose-600'}`}
                 >
-                  {soundOn ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-                  Audio: {soundOn ? 'SI' : 'NO'}
+                  {isPremium ? 'Salva e Home' : 'Abbandona'}
                 </button>
               </div>
             </div>
@@ -2446,7 +2557,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         )}
 
         {/* PAUSE SCREEN */}
-        {isPaused && (
+        {isPaused && !showExitConfirm && (
           <div className="absolute inset-0 bg-black/80 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center">
             <h2 className="text-3xl font-extrabold text-white mb-2">Partita In Pausa</h2>
             <p className="text-gray-500 text-sm mb-6">Sistemi di volo offline temporaneamente sospesi.</p>
@@ -2459,10 +2570,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
                 Riprendi Volo
               </button>
               <button 
-                onClick={quitGame}
+                onClick={requestExitRun}
                 className="w-full py-3 bg-zinc-900 border border-zinc-800 text-gray-400 hover:text-white font-bold rounded-xl transition-all"
               >
-                Abbandona Partita
+                Torna alla Home
               </button>
             </div>
           </div>
@@ -2529,10 +2640,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
               )}
 
               <button 
-                onClick={quitGame}
+                onClick={finishRun}
                 className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl transition-all text-sm flex items-center justify-center gap-1.5 active:scale-95 shadow-lg shadow-blue-600/20"
               >
-                <RotateCcw className="w-4 h-4" /> Salva ed Esci
+                <RotateCcw className="w-4 h-4" /> RISULTATI E HOME
               </button>
             </div>
           </div>
@@ -2594,27 +2705,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
       </div>
 
-      {/* Footer controls inside active game */}
-      {isPlaying && !isPaused && !isGameOver && (
-        <div className="px-4 py-2 bg-zinc-900/80 border-t border-zinc-800 flex items-center justify-between">
-          <button 
-            onClick={() => { audio.playClick(); setIsPaused(true); }}
-            className="p-1.5 rounded bg-zinc-800 text-gray-300 hover:text-white hover:bg-zinc-700 transition-colors"
-            title="Pausa"
-          >
-            <Pause className="w-4 h-4" />
-          </button>
-          
-          <div className="flex gap-2">
-            <button 
-              onClick={toggleSound}
-              className="p-1.5 rounded bg-zinc-800 text-gray-300 hover:text-white hover:bg-zinc-700 transition-colors"
-            >
-              {soundOn ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
