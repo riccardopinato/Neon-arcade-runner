@@ -1,0 +1,8 @@
+{
+  "appId": "com.riccardopinato.neonarcaderunner",
+  "appName": "Neon Arcade Runner",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}
