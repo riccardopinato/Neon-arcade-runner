@@ -103,6 +103,11 @@ export interface UserState {
   volumeSfx?: number; // 0 to 100
   reducedParticles?: boolean;
   batterySaverMode?: boolean;
+  // MONETIZATION FOUNDATION
+  runsSinceInterstitial?: number;
+  lastInterstitialAt?: number;
+  interstitialsShown?: number;
+  rewardedPostRunDoubleClaims?: number;
 }
 
 export interface PurchaseItem {

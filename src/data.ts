@@ -70,18 +70,18 @@ export const SHIPS: Ship[] = [
 
 export const STORE_PRODUCTS: PurchaseItem[] = [
   {
-    id: 'sub_vip',
-    title: 'VIP Gold Premium Pass',
-    description: 'Sblocca TUTTE le navi premium, sblocca la modalità Chaos a punti tripli, raddoppia le gemme raccolte per sempre e rimuove completamente i banner pubblicitari!',
-    price: '€4.99 / mese',
-    type: 'subscription',
+    id: 'noncons_neon_premium',
+    title: 'Neon Premium Lifetime',
+    description: 'Sblocca tutte le navi premium, la modalità Chaos, il raddoppio automatico delle gemme, il rientro VIP giornaliero e rimuove per sempre gli annunci interstitial.',
+    price: '€5.99',
+    type: 'non-consumable',
     icon: 'Crown'
   },
   {
     id: 'noncons_remove_ads',
-    title: 'Rimuovi Banner Pubblicitari',
-    description: 'Rimuove definitivamente tutti i banner e i pop-up pubblicitari fastidiosi tra le partite. Conserva i bonus opzionali con video premio.',
-    price: '€1.99',
+    title: 'No Ads',
+    description: 'Rimuove definitivamente gli annunci interstitial automatici. I video premio restano sempre opzionali.',
+    price: '€2.99',
     type: 'non-consumable',
     icon: 'ShieldAlert'
   },

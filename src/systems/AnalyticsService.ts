@@ -473,7 +473,7 @@ export class AnalyticsService {
 
   static trackRewardedAd(properties: {
     ad_state: 'offered' | 'accepted' | 'declined' | 'started' | 'completed' | 'failed' | 'reward_granted';
-    reward_type: 'revive' | 'double_rewards' | 'booster' | 'premium_ship_trial' | 'extra_chest' | 'lucky_wheel_spin' | 'streak_freeze';
+    reward_type: 'revive' | 'double_rewards' | 'shield_boost' | 'magnet_boost' | 'fire_boost' | 'gacha_chest' | 'booster' | 'premium_ship_trial' | 'extra_chest' | 'lucky_wheel_spin' | 'streak_freeze';
     runId?: string;
   }) {
     const eventName = `rewarded_ad_${properties.ad_state}`;
@@ -485,7 +485,7 @@ export class AnalyticsService {
 
   static trackPurchase(properties: {
     purchase_state: 'opened' | 'viewed' | 'started' | 'completed' | 'cancelled' | 'failed' | 'restore_started' | 'restore_completed';
-    product_id?: 'no_ads' | 'full_game_unlock' | 'vip_gold_pass' | 'starter_pack' | 'skin_pack' | 'gem_pack';
+    product_id?: 'neon_premium' | 'no_ads' | 'gem_pack' | 'unknown';
   }) {
     let eventName = '';
     if (properties.purchase_state === 'opened') {
@@ -500,6 +500,17 @@ export class AnalyticsService {
     
     this.trackEvent(eventName, {
       product_id: properties.product_id
+    });
+  }
+
+  static trackInterstitial(properties: {
+    ad_state: 'eligible' | 'shown' | 'closed' | 'skipped';
+    reason?: string;
+    runs_since_last?: number;
+  }) {
+    this.trackEvent(`interstitial_${properties.ad_state}`, {
+      reason: properties.reason,
+      runs_since_last: properties.runs_since_last
     });
   }
 

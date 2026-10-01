@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { UserState, PurchaseItem, GameStats } from './types';
 import { SHIPS, STORE_PRODUCTS } from './data';
 import { audio } from './utils/audio';
@@ -12,6 +12,7 @@ import { NeonLiveOpsSystem } from './systems/NeonLiveOpsSystem';
 import { AnalyticsService } from './systems/AnalyticsService';
 import { BalanceConfig } from './systems/BalanceConfig';
 import { EconomyMonitor } from './systems/EconomyMonitor';
+import { MonetizationSystem, type RewardedAdRewardType } from './systems/MonetizationSystem';
 import { DebugAnalyticsDashboard } from './components/DebugAnalyticsDashboard';
 import { 
   Gamepad2, 
@@ -117,7 +118,11 @@ const DEFAULT_USER_STATE: UserState = {
   volumeMusic: 80,
   volumeSfx: 80,
   reducedParticles: false,
-  batterySaverMode: false
+  batterySaverMode: false,
+  runsSinceInterstitial: 0,
+  lastInterstitialAt: 0,
+  interstitialsShown: 0,
+  rewardedPostRunDoubleClaims: 0
 };
 
 const getDailyRunShipId = (): string => {
@@ -205,7 +210,7 @@ export default function App() {
   // Ads management overlays
   const [activeAd, setActiveAd] = useState<{
     type: 'banner' | 'interstitial' | 'rewarded';
-    rewardType?: 'extra_life' | 'shield_boost' | 'magnet_boost' | 'fire_boost' | 'gems_double';
+    rewardType?: RewardedAdRewardType;
   } | null>(null);
 
   // Extra life triggers inside active game
@@ -216,9 +221,13 @@ export default function App() {
   const [lastRunStats, setLastRunStats] = useState<GameStats | null>(null);
   const [showRunSummary, setShowRunSummary] = useState(false);
   const [bpAlert, setBpAlert] = useState<string | null>(null);
+  const [pendingInterstitialAfterSummary, setPendingInterstitialAfterSummary] = useState(false);
+  const [postRunDoubleClaimed, setPostRunDoubleClaimed] = useState(false);
 
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [runStartTime, setRunStartTime] = useState<number>(0);
+  const sessionStartedAtRef = useRef(Date.now());
+  const monetizationSystem = useMemo(() => new MonetizationSystem(), []);
 
   useEffect(() => {
     if (isPlaying) {
@@ -313,72 +322,211 @@ export default function App() {
     audio.setEnabled(target);
   };
 
-  const handlePurchaseSuccess = (product: PurchaseItem) => {
+  const handlePurchaseProduct = async (product: PurchaseItem) => {
+    const productId = MonetizationSystem.normalizeAnalyticsProductId(product.id);
+    AnalyticsService.trackPurchase({ purchase_state: 'started', product_id: productId });
+
+    const result = await monetizationSystem.getBillingProvider().purchaseProduct(product.id);
+    if (!result.success) {
+      AnalyticsService.trackPurchase({ purchase_state: 'failed', product_id: productId });
+      return result;
+    }
+
     setUserState(prev => {
-      let withGems = prev;
+      let next = prev;
       if (product.gemsReward) {
-        withGems = EconomySystem.transact(prev, {
+        next = EconomySystem.transact(next, {
           transactionType: 'credit',
           currencyType: 'gems',
-          amount: product.gemsReward || 0,
+          amount: product.gemsReward,
           source: 'store_purchase',
           relatedEvent: `purchase_${product.id}`
         });
       }
+      return MonetizationSystem.applyProductEntitlement(next, product.id);
+    });
 
-      const nextState = { ...withGems };
-      if (product.id === 'sub_vip') {
-        nextState.isPremium = true;
-        nextState.isAdFree = true;
-        nextState.ownedShips = Array.from(new Set([...nextState.ownedShips, 'starter', 'velocity', 'dreadnought', 'premium_golden', 'premium_quantum']));
-        nextState.chaosModeUnlocked = true;
-      } else if (product.id === 'noncons_remove_ads') {
-        nextState.isAdFree = true;
+    AnalyticsService.trackPurchase({ purchase_state: 'completed', product_id: productId });
+    return { success: true };
+  };
+
+  const handleRestorePurchases = async () => {
+    AnalyticsService.trackPurchase({ purchase_state: 'restore_started' });
+    const result = await monetizationSystem.getBillingProvider().restorePurchases();
+
+    if (result.success && result.productIds.length > 0) {
+      setUserState(prev =>
+        result.productIds.reduce(
+          (current, productId) => MonetizationSystem.applyProductEntitlement(current, productId),
+          prev
+        )
+      );
+      AnalyticsService.trackPurchase({ purchase_state: 'restore_completed' });
+      return true;
+    }
+
+    AnalyticsService.trackPurchase({ purchase_state: 'failed' });
+    return false;
+  };
+
+  const grantRewardedReward = (rewardType: RewardedAdRewardType) => {
+    setUserState(prev => ({
+      ...prev,
+      adsWatchedCount: (prev.adsWatchedCount || 0) + 1,
+      dailyAdsWatched: (prev.dailyAdsWatched || 0) + 1
+    }));
+
+    if (rewardType === 'revive') {
+      setGrantExtraLifeTrigger(true);
+      setHasUsedAdExtraLife(true);
+    } else if (rewardType === 'shield_boost') {
+      setTempShieldSelected(true);
+    } else if (rewardType === 'fire_boost') {
+      setTempFireSelected(true);
+    } else if (rewardType === 'magnet_boost') {
+      setTempMagnetSelected(true);
+    } else if (rewardType === 'gacha_chest') {
+      handleOpenDailyChest(true);
+    } else if (rewardType === 'double_rewards' && lastRunStats && !postRunDoubleClaimed) {
+      const bonus = Math.max(0, lastRunStats.gemsCollected || 0);
+      if (bonus > 0) {
+        setUserState(prev => {
+          const credited = EconomySystem.transact(prev, {
+            transactionType: 'credit',
+            currencyType: 'gems',
+            amount: bonus,
+            source: 'rewarded_ad',
+            relatedEvent: 'post_run_double_rewards',
+            runId: activeRunId || undefined
+          });
+          return {
+            ...credited,
+            rewardedPostRunDoubleClaims: (credited.rewardedPostRunDoubleClaims || 0) + 1
+          };
+        });
+        setLastRunStats(prev => prev ? { ...prev, gemsCollected: prev.gemsCollected + bonus } : prev);
+        setPostRunDoubleClaimed(true);
       }
+    }
 
-      AnalyticsService.trackPurchase({
-        purchase_state: 'completed',
-        product_id: product.id as any
+    AnalyticsService.trackRewardedAd({
+      ad_state: 'reward_granted',
+      reward_type: rewardType,
+      runId: activeRunId || undefined
+    });
+  };
+
+  const requestRewardedAd = async (rewardType: RewardedAdRewardType) => {
+    AnalyticsService.trackRewardedAd({
+      ad_state: 'offered',
+      reward_type: rewardType,
+      runId: activeRunId || undefined
+    });
+    AnalyticsService.trackRewardedAd({
+      ad_state: 'accepted',
+      reward_type: rewardType,
+      runId: activeRunId || undefined
+    });
+
+    const provider = monetizationSystem.getAdProvider();
+    if (provider.mode === 'production' && provider.isAvailable()) {
+      AnalyticsService.trackRewardedAd({
+        ad_state: 'started',
+        reward_type: rewardType,
+        runId: activeRunId || undefined
       });
 
-      return nextState;
+      try {
+        let earned = false;
+        await provider.showRewardedAd(
+          () => {
+            earned = true;
+            grantRewardedReward(rewardType);
+          },
+          () => {}
+        );
+        AnalyticsService.trackRewardedAd({
+          ad_state: earned ? 'completed' : 'failed',
+          reward_type: rewardType,
+          runId: activeRunId || undefined
+        });
+      } catch {
+        AnalyticsService.trackRewardedAd({
+          ad_state: 'failed',
+          reward_type: rewardType,
+          runId: activeRunId || undefined
+        });
+      }
+      return;
+    }
+
+    AnalyticsService.trackRewardedAd({
+      ad_state: 'started',
+      reward_type: rewardType,
+      runId: activeRunId || undefined
     });
+    setActiveAd({ type: 'rewarded', rewardType });
+  };
+
+  const presentInterstitial = async () => {
+    setPendingInterstitialAfterSummary(false);
+
+    if (!MonetizationSystem.areAdsEnabled(userState)) {
+      AnalyticsService.trackInterstitial({ ad_state: 'skipped', reason: 'no_ads' });
+      return;
+    }
+
+    setUserState(prev => MonetizationSystem.markInterstitialShown(prev));
+    AnalyticsService.trackInterstitial({
+      ad_state: 'shown',
+      runs_since_last: userState.runsSinceInterstitial || 0
+    });
+
+    const provider = monetizationSystem.getAdProvider();
+    if (provider.mode === 'production' && provider.isAvailable()) {
+      try {
+        await provider.showInterstitialAd(() => {
+          AnalyticsService.trackInterstitial({ ad_state: 'closed' });
+        });
+      } catch {
+        AnalyticsService.trackInterstitial({ ad_state: 'skipped', reason: 'provider_error' });
+      }
+      return;
+    }
+
+    setActiveAd({ type: 'interstitial' });
+  };
+
+  const handleRunSummaryDismiss = (
+    nextTab?: 'play' | 'missions' | 'garage' | 'shop' | 'achievements' | 'battlepass' | 'debug'
+  ) => {
+    audio.playClick();
+    setShowRunSummary(false);
+    if (nextTab) setActiveTab(nextTab);
+
+    if (pendingInterstitialAfterSummary) {
+      setTimeout(() => {
+        void presentInterstitial();
+      }, 100);
+    }
   };
 
   const handleAdClose = (rewardGranted: boolean) => {
     if (!activeAd) return;
 
-    if (activeAd.type === 'rewarded') {
-      AnalyticsService.trackRewardedAd({
-        ad_state: rewardGranted ? 'completed' : 'failed',
-        reward_type: (activeAd.rewardType || 'revive') as any,
-        runId: activeRunId || undefined
-      });
+    if (activeAd.type === 'interstitial') {
+      AnalyticsService.trackInterstitial({ ad_state: 'closed' });
     }
 
-    if (rewardGranted && activeAd.type === 'rewarded') {
-      setUserState(prev => {
-        const adCount = (prev.adsWatchedCount || 0) + 1;
-        const dailyAds = (prev.dailyAdsWatched || 0) + 1;
-        return {
-          ...prev,
-          adsWatchedCount: adCount,
-          dailyAdsWatched: dailyAds
-        };
+    if (activeAd.type === 'rewarded') {
+      const rewardType = activeAd.rewardType || 'revive';
+      AnalyticsService.trackRewardedAd({
+        ad_state: rewardGranted ? 'completed' : 'failed',
+        reward_type: rewardType,
+        runId: activeRunId || undefined
       });
-
-      // Deliver rewards according to type
-      if (activeAd.rewardType === 'extra_life') {
-        setGrantExtraLifeTrigger(true);
-        setHasUsedAdExtraLife(true);
-      } else if (activeAd.rewardType === 'shield_boost') {
-        setTempShieldSelected(true);
-      } else if (activeAd.rewardType === 'fire_boost') {
-        setTempFireSelected(true);
-      } else if (activeAd.rewardType === 'magnet_boost') {
-        setTempMagnetSelected(true);
-      } else if (activeAd.rewardType === 'gacha_chest' as any) {
-        handleOpenDailyChest(true);
+      if (rewardGranted) {
+        grantRewardedReward(rewardType);
       }
     }
 
@@ -530,6 +678,17 @@ export default function App() {
     setIsPlaying(false);
     setHasUsedAdExtraLife(false);
     setGrantExtraLifeTrigger(false);
+    setPostRunDoubleClaimed(false);
+
+    const interstitialDecision = MonetizationSystem.evaluatePostRunInterstitial(
+      userState,
+      sessionStartedAtRef.current
+    );
+    AnalyticsService.trackInterstitial({
+      ad_state: interstitialDecision.eligible ? 'eligible' : 'skipped',
+      reason: interstitialDecision.reason,
+      runs_since_last: interstitialDecision.nextRunsSinceInterstitial
+    });
 
     // Apply premium gem double multiplier!
     const multiplier = userState.isPremium ? 2 : 1;
@@ -779,7 +938,8 @@ export default function App() {
 
         // Save temp alerts for summary
         _tempFragmentAlert: fragmentAlert || undefined,
-        _tempDailyRunBonus: (dailyRunBonusMsg || bossStreakBonusMsg) ? `${dailyRunBonusMsg} ${bossStreakBonusMsg}`.trim() : undefined
+        _tempDailyRunBonus: (dailyRunBonusMsg || bossStreakBonusMsg) ? `${dailyRunBonusMsg} ${bossStreakBonusMsg}`.trim() : undefined,
+        runsSinceInterstitial: interstitialDecision.nextRunsSinceInterstitial
       };
     });
 
@@ -790,17 +950,11 @@ export default function App() {
       vipXpBonus: vipXpBonus
     } as any);
     setShowRunSummary(true);
+    setPendingInterstitialAfterSummary(interstitialDecision.eligible);
 
     // Reset daily run active mode after matching
     setIsDailyRunMode(false);
     setIsDailyBossRunMode(false);
-
-    // Trigger random Interstitial Ad sometimes (33% rate) if NOT premium and NOT ad-free
-    if (!userState.isPremium && !userState.isAdFree && Math.random() < 0.4) {
-      setTimeout(() => {
-        setActiveAd({ type: 'interstitial' });
-      }, 500);
-    }
   };
 
   const handleUnlockShip = (shipId: string, price: number) => {
@@ -1150,7 +1304,7 @@ export default function App() {
               preMatchFireBoost={(isDailyRunMode || isDailyBossRunMode) ? false : tempFireSelected}
               preMatchMagnet={(isDailyRunMode || isDailyBossRunMode) ? false : tempMagnetSelected}
               onGameEnd={handleGameEnd}
-              onWatchAdForExtraLife={() => setActiveAd({ type: 'rewarded', rewardType: 'extra_life' })}
+              onWatchAdForExtraLife={() => { void requestRewardedAd('revive'); }}
               hasUsedAdExtraLife={hasUsedAdExtraLife}
               grantExtraLifeTrigger={grantExtraLifeTrigger}
               upgradeLevels={userState.upgradeLevels}
@@ -1169,7 +1323,7 @@ export default function App() {
               <div className="p-3 bg-zinc-900 border border-zinc-800 rounded-xl flex items-center justify-between text-xs text-gray-400">
                 <span className="flex items-center gap-1.5">
                   <ShieldAlert className="w-4 h-4 text-yellow-500" />
-                  Rimuovi banner e sblocca la modalità Chaos acquistando il <strong>VIP Premium Pass</strong> nello Store offline.
+                  Rimuovi banner e sblocca la modalità Chaos acquistando il <strong>Neon Premium</strong> nello Store offline.
                 </span>
                 <button 
                   onClick={() => { audio.playClick(); setIsShopOpen(true); }}
@@ -1212,11 +1366,27 @@ export default function App() {
                   </div>
                 </div>
 
-                {userState.isPremium && (
+                {userState.isPremium ? (
                   <div className="text-xs text-yellow-400 font-bold">
-                    👑 Bonus VIP Premium Attivo: Hai guadagnato il RADDOPPIO automatico delle gemme in gioco!
+                    👑 Neon Premium: gemme della run raddoppiate automaticamente e interstitial disattivati.
                   </div>
-                )}
+                ) : lastRunStats.gemsCollected > 0 ? (
+                  <div className="max-w-xl mx-auto">
+                    {postRunDoubleClaimed ? (
+                      <div className="text-xs text-emerald-400 font-bold">
+                        ✓ Video completato: ricompensa gemme raddoppiata.
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => { void requestRewardedAd('double_rewards'); }}
+                        className="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-black flex items-center justify-center gap-2"
+                      >
+                        <Tv className="w-4 h-4" /> GUARDA VIDEO · RADDOPPIA GEMME RUN
+                      </button>
+                    )}
+                  </div>
+                ) : null}
 
                 {/* Battle Pass Progression Info Row */}
                 <div className="p-4 rounded-xl border border-pink-500/20 bg-pink-950/10 max-w-xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-left">
@@ -1234,7 +1404,7 @@ export default function App() {
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-black text-gray-400">LIVELLO {Math.floor((userState.battlePassXp || 0) / 100) + 1}</span>
                     <button 
-                      onClick={() => { audio.playClick(); setShowRunSummary(false); setActiveTab('battlepass'); }}
+                      onClick={() => handleRunSummaryDismiss('battlepass')}
                       className="px-3 py-1 bg-pink-600 hover:bg-pink-500 text-white font-extrabold text-[10px] uppercase rounded-lg transition-all shadow shadow-pink-600/30 cursor-pointer"
                     >
                       Vedi Premi 🎁
@@ -1243,7 +1413,7 @@ export default function App() {
                 </div>
 
                 <button 
-                  onClick={() => { audio.playClick(); setShowRunSummary(false); }}
+                  onClick={() => handleRunSummaryDismiss()}
                   className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-all"
                 >
                   Ottimo! Torna alla dashboard
@@ -2998,16 +3168,7 @@ export default function App() {
 
       </main>
 
-      {/* Banner Ad Overlay persistently at bottom on dashboard, hidden for Premium/VIP */}
-      {!isPlaying && (
-        <AdOverlay 
-          type="banner"
-          onClose={() => {}}
-          isAdFree={userState.isAdFree}
-          isPremium={userState.isPremium}
-        />
-      )}
-
+      {/* Automatic ads are full-screen interstitials only after the configured run cap. Rewarded ads are always opt-in. */}
       {/* Full screen video rewarded or interstitial advertisements */}
       {activeAd && (
         <AdOverlay 
@@ -3024,7 +3185,9 @@ export default function App() {
         isOpen={isShopOpen}
         onClose={() => setIsShopOpen(false)}
         userState={userState}
-        onPurchaseSuccess={handlePurchaseSuccess}
+        billingMode={monetizationSystem.getMode()}
+        onPurchase={handlePurchaseProduct}
+        onRestorePurchases={handleRestorePurchases}
       />
 
       {/* Chest Rewards Gacha Reveal Modal */}
