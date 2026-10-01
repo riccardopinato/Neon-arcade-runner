@@ -58,3 +58,31 @@ After native monetization QA:
 - crash/performance pass;
 - accessibility / small-screen pass;
 - production AAB.
+
+
+## MOBILE GAMEPLAY REPAIR — Fullscreen, Damage & Exit Flow
+
+Status: **implemented on feature branch**
+
+- [x] replace 4:5 desktop-style game card with true mobile `100dvh` gameplay;
+- [x] hide app header and Android status bar during a run;
+- [x] make HUD an overlay so it does not reduce maneuvering space;
+- [x] remove FRECCE/WASD desktop instructions;
+- [x] remove the redundant second “AVVIA MOTORI” screen;
+- [x] start gameplay immediately after Decolla / Daily / Boss selection;
+- [x] fix shield expiration leaving permanent invulnerability;
+- [x] keep only timed hit-grace or active shield as valid invulnerability sources;
+- [x] add visible Home control during gameplay;
+- [x] intercept Android Back gesture/button while a run is active;
+- [x] Free exit confirmation discards the current run without rewards;
+- [x] Neon Premium can suspend and resume one run locally;
+- [x] add viewport safe-area support for mobile displays.
+
+### Device QA required
+
+- verify full-height canvas on tall Android displays;
+- collide repeatedly with meteors after shield expiration;
+- verify boss projectiles and hazards remove HP;
+- verify Android back gesture opens the exit confirmation;
+- verify Free exit loses the run;
+- verify Premium save/resume restores HP, position, entities, score, gems and timed powerups.

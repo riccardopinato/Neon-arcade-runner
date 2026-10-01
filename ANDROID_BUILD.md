@@ -21,3 +21,8 @@ Artifact:
 APK filename:
 
 `Neon-Arcade-Runner-test.apk`
+
+
+## Mobile fullscreen behavior
+
+The test APK now uses the Capacitor App and Status Bar plugins. During active gameplay the web app occupies `100dvh` and hides the Android status bar. Android Back is captured by the game and opens the run-exit confirmation instead of immediately closing the app.

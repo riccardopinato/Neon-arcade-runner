@@ -73,3 +73,17 @@ Certification requires:
 - AdMob test IDs;
 - Internal Testing;
 - purchase/restore/rewarded/interstitial checks on a real device.
+
+
+## Mobile gameplay repair — 2026-10-01
+
+The first real-device APK exposed three blocking gameplay defects and one mobile UX mismatch:
+
+1. the run was constrained by a desktop-style `aspect-[4/5]` wrapper, leaving a large unusable lower area;
+2. collected shields could leave `player.isInvulnerable` permanently true after their timer expired;
+3. Android Back could leave the application instead of offering an in-run exit flow;
+4. desktop-oriented copy such as FRECCE/WASD and the redundant AVVIA MOTORI screen remained visible.
+
+The repair branch changes the run to a fullscreen mobile scene, derives invulnerability strictly from timed hit grace / active shield, introduces guarded Home/Back behavior and adds Premium local suspend/resume.
+
+Free voluntary exit does not award run rewards. A normal death/victory still goes through the standard run completion pipeline.

@@ -31,3 +31,34 @@
   animation: shakeGlow 3.5s ease-in-out infinite;
 }
 
+
+
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+  background: #000;
+}
+
+html,
+body {
+  overscroll-behavior: none;
+}
+
+body {
+  min-height: 100dvh;
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#root {
+  min-height: 100dvh;
+}
+
+canvas {
+  -webkit-user-select: none;
+  user-select: none;
+}

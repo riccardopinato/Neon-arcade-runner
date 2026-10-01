@@ -13,6 +13,8 @@ import { AnalyticsService } from './systems/AnalyticsService';
 import { BalanceConfig } from './systems/BalanceConfig';
 import { EconomyMonitor } from './systems/EconomyMonitor';
 import { MonetizationSystem, type RewardedAdRewardType } from './systems/MonetizationSystem';
+import { Capacitor } from '@capacitor/core';
+import { StatusBar } from '@capacitor/status-bar';
 import { DebugAnalyticsDashboard } from './components/DebugAnalyticsDashboard';
 import { 
   Gamepad2, 
@@ -191,6 +193,17 @@ export default function App() {
   const [garageSubTab, setGarageSubTab] = useState<'ships' | 'upgrades'>('ships');
   const [isPlaying, setIsPlaying] = useState(false);
   const [isShopOpen, setIsShopOpen] = useState(false);
+  const [suspendedRun, setSuspendedRun] = useState<string | null>(() =>
+    localStorage.getItem('neon_runner_suspended_run')
+  );
+  const [resumeRunSnapshot, setResumeRunSnapshot] = useState<string | null>(null);
+  const [resumeRunMeta, setResumeRunMeta] = useState<{
+    equippedShipId: string;
+    isDailyRunMode: boolean;
+    isDailyBossRunMode: boolean;
+    chaosModeSelected: boolean;
+    dailyRunModifier: string;
+  } | null>(null);
   
   // Audio state
   const [soundOn, setSoundOn] = useState(true);
@@ -261,6 +274,29 @@ export default function App() {
       setActiveRunId(null);
     }
   }, [isPlaying]);
+
+  useEffect(() => {
+    document.body.style.overflow = isPlaying ? 'hidden' : '';
+
+    if (Capacitor.isNativePlatform()) {
+      if (isPlaying) {
+        void StatusBar.hide();
+      } else {
+        void StatusBar.show();
+      }
+    }
+
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [isPlaying]);
+
+  useEffect(() => {
+    if (isPlaying && !resumeRunSnapshot && suspendedRun) {
+      localStorage.removeItem('neon_runner_suspended_run');
+      setSuspendedRun(null);
+    }
+  }, [isPlaying, resumeRunSnapshot]);
 
   // Initialize Analytics and track returning player
   useEffect(() => {
@@ -675,6 +711,10 @@ export default function App() {
   };
 
   const handleGameEnd = (stats: GameStats) => {
+    localStorage.removeItem('neon_runner_suspended_run');
+    setSuspendedRun(null);
+    setResumeRunSnapshot(null);
+    setResumeRunMeta(null);
     setIsPlaying(false);
     setHasUsedAdExtraLife(false);
     setGrantExtraLifeTrigger(false);
@@ -1246,11 +1286,77 @@ export default function App() {
     setTimeout(() => setBpAlert(null), 2500);
   };
 
+  const handleExitRun = (gameSnapshot?: string) => {
+    if (gameSnapshot && userState.isPremium) {
+      const currentShipId = resumeRunMeta?.equippedShipId
+        || (isDailyRunMode ? getDailyRunShipId() : userState.equippedShip);
+
+      const envelope = JSON.stringify({
+        version: 1,
+        savedAt: Date.now(),
+        gameSnapshot,
+        meta: {
+          equippedShipId: currentShipId,
+          isDailyRunMode,
+          isDailyBossRunMode,
+          chaosModeSelected,
+          dailyRunModifier: resumeRunMeta?.dailyRunModifier
+            || (isDailyRunMode ? getDailyModifier().id : '')
+        }
+      });
+
+      localStorage.setItem('neon_runner_suspended_run', envelope);
+      setSuspendedRun(envelope);
+    } else {
+      localStorage.removeItem('neon_runner_suspended_run');
+      setSuspendedRun(null);
+    }
+
+    setResumeRunSnapshot(null);
+    setResumeRunMeta(null);
+    setIsPlaying(false);
+    setIsDailyRunMode(false);
+    setIsDailyBossRunMode(false);
+    setTempShieldSelected(false);
+    setTempFireSelected(false);
+    setTempMagnetSelected(false);
+  };
+
+  const handleResumeSuspendedRun = () => {
+    if (!userState.isPremium || !suspendedRun) return;
+
+    try {
+      const envelope = JSON.parse(suspendedRun);
+      if (envelope?.version !== 1 || !envelope?.gameSnapshot || !envelope?.meta) {
+        throw new Error('Invalid suspended run');
+      }
+
+      setResumeRunSnapshot(envelope.gameSnapshot);
+      setResumeRunMeta(envelope.meta);
+      setIsDailyRunMode(Boolean(envelope.meta.isDailyRunMode));
+      setIsDailyBossRunMode(Boolean(envelope.meta.isDailyBossRunMode));
+      setChaosModeSelected(Boolean(envelope.meta.chaosModeSelected));
+      setIsPlaying(true);
+    } catch (error) {
+      console.error('Unable to resume suspended run', error);
+      localStorage.removeItem('neon_runner_suspended_run');
+      setSuspendedRun(null);
+    }
+  };
+
+  const discardSuspendedRun = () => {
+    audio.playClick();
+    localStorage.removeItem('neon_runner_suspended_run');
+    setSuspendedRun(null);
+    setResumeRunSnapshot(null);
+    setResumeRunMeta(null);
+  };
+
   return (
     <div className="min-h-screen bg-zinc-950 text-white flex flex-col font-sans selection:bg-blue-500/30 selection:text-blue-200">
       
       {/* Top Main Navigation Header */}
-      <header className="border-b border-zinc-900 bg-zinc-900/60 sticky top-0 z-30 backdrop-blur-md">
+      {!isPlaying && <header className="border-b border-zinc-900 bg-zinc-900/60 sticky top-0 z-30 backdrop-blur-md">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
           
           <div className="flex items-center gap-2">
@@ -1288,16 +1394,19 @@ export default function App() {
             </button>
           </div>
         </div>
-      </header>
+      </header>}
 
       {/* Main Container */}
-      <main className="flex-1 w-full max-w-5xl mx-auto px-4 py-6 flex flex-col gap-6">
+      <main className={isPlaying
+        ? "fixed inset-0 z-50 w-screen h-[100dvh] max-w-none p-0 m-0 overflow-hidden bg-black"
+        : "flex-1 w-full max-w-5xl mx-auto px-4 py-6 flex flex-col gap-6"
+      }>
         
         {/* Run active game canvas */}
         {isPlaying ? (
-          <div className="aspect-[4/5] max-w-md w-full mx-auto border border-zinc-800 rounded-2xl overflow-hidden shadow-2xl">
+          <div className="w-full h-full overflow-hidden bg-black">
             <GameCanvas 
-              equippedShipId={isDailyRunMode ? getDailyRunShipId() : userState.equippedShip}
+              equippedShipId={resumeRunMeta?.equippedShipId || (isDailyRunMode ? getDailyRunShipId() : userState.equippedShip)}
               isPremium={userState.isPremium}
               chaosMode={(isDailyRunMode || isDailyBossRunMode) ? false : chaosModeSelected}
               preMatchShield={(isDailyRunMode || isDailyBossRunMode) ? false : tempShieldSelected}
@@ -1309,28 +1418,34 @@ export default function App() {
               grantExtraLifeTrigger={grantExtraLifeTrigger}
               upgradeLevels={userState.upgradeLevels}
               isDailyRun={isDailyRunMode}
-              dailyRunModifier={isDailyRunMode ? getDailyModifier().id : ''}
+              dailyRunModifier={resumeRunMeta?.dailyRunModifier || (isDailyRunMode ? getDailyModifier().id : '')}
               vipFreeReviveUsedToday={userState.vipFreeReviveUsedToday || false}
               onUseVipFreeRevive={handleUseVipFreeRevive}
               isDailyBossRun={isDailyBossRunMode}
+              autoStart={true}
+              resumeSnapshot={resumeRunSnapshot}
+              onExitRun={handleExitRun}
+              fleet={userState.fleet}
             />
           </div>
         ) : (
           <div className="flex-1 flex flex-col gap-6">
             
-            {/* Quick Banner Ads placeholder if not Premium */}
-            {!userState.isPremium && !userState.isAdFree && (
-              <div className="p-3 bg-zinc-900 border border-zinc-800 rounded-xl flex items-center justify-between text-xs text-gray-400">
-                <span className="flex items-center gap-1.5">
-                  <ShieldAlert className="w-4 h-4 text-yellow-500" />
-                  Rimuovi banner e sblocca la modalità Chaos acquistando il <strong>Neon Premium</strong> nello Store offline.
-                </span>
-                <button 
-                  onClick={() => { audio.playClick(); setIsShopOpen(true); }}
-                  className="text-blue-400 font-bold hover:underline"
-                >
-                  Rimuovi Ora
-                </button>
+            {userState.isPremium && suspendedRun && (
+              <div className="p-4 rounded-2xl border border-yellow-500/30 bg-yellow-500/5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div>
+                  <span className="text-[10px] font-black uppercase tracking-widest text-yellow-400">Neon Premium</span>
+                  <h3 className="font-black text-white mt-1">Partita sospesa disponibile</h3>
+                  <p className="text-xs text-zinc-400 mt-1">Riprendi la run dal punto in cui sei tornato alla Home.</p>
+                </div>
+                <div className="flex gap-2 w-full sm:w-auto">
+                  <button type="button" onClick={discardSuspendedRun} className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl border border-zinc-700 bg-zinc-900 text-zinc-300 text-xs font-bold">
+                    Scarta
+                  </button>
+                  <button type="button" onClick={handleResumeSuspendedRun} className="flex-1 sm:flex-none px-5 py-2.5 rounded-xl bg-yellow-600 text-white text-xs font-black shadow-lg shadow-yellow-600/20">
+                    RIPRENDI PARTITA
+                  </button>
+                </div>
               </div>
             )}
 
