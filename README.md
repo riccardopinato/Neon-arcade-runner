@@ -57,3 +57,8 @@ Production Android is expected to provide native bridges for:
 - `window.AndroidAdMobBridge`.
 
 Real-money monetization is not considered certified until it is tested through Google Play Internal Testing with the production billing/ad integration.
+
+
+## Template Notion — ricerca
+
+[Apri il catalogo dei template](docs/TEMPLATE_NOTION/README.md). Nessuna funzionalità o vendita attivata.
